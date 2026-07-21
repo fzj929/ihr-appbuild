@@ -1,0 +1,64 @@
+.workspace-maintenance {
+  margin-top: 28px;
+  padding-top: 20px;
+  border-top: 1px solid #d8ded8;
+}
+
+.workspace-maintenance > span {
+  display: block;
+  color: #8b9896;
+  font: 9px 'Fira Code', monospace;
+  letter-spacing: .13em;
+}
+
+.workspace-maintenance > p {
+  margin: 8px 0 12px;
+  color: #788582;
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.workspace-clean {
+  width: 100%;
+  min-height: 38px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px solid #d8aaa3;
+  background: #fff8f6;
+  color: #a14336;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.workspace-clean svg {
+  width: 15px;
+}
+
+.workspace-clean:hover:not(:disabled) {
+  border-color: var(--red);
+  background: #fff0ec;
+}
+
+.workspace-clean:disabled {
+  cursor: not-allowed;
+  opacity: .45;
+}
+
+.workspace-notice {
+  margin-top: 10px;
+  padding: 9px 10px;
+  border-left: 2px solid var(--green);
+  background: #e8f4ed;
+  color: #276b50;
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.workspace-notice.error {
+  border-left-color: var(--red);
+  background: #fff0ed;
+  color: #8b3328;
+}

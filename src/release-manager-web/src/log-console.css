@@ -1,0 +1,138 @@
+.release-log {
+  display: block;
+  padding: 14px 0;
+}
+
+.log-actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  color: #829491;
+  font-size: 11px;
+}
+
+.log-actions label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.log-actions button {
+  border: 1px solid #556866;
+  padding: 5px 9px;
+  background: transparent;
+  color: #d4dedc;
+  cursor: pointer;
+  font: inherit;
+}
+
+.log-actions button:hover { border-color: #ed9f34; color: #ed9f34; }
+
+.log-stage-strip {
+  display: flex;
+  gap: 7px;
+  overflow-x: auto;
+  padding: 9px 12px;
+  border-bottom: 1px solid #273b3d;
+  background: #132326;
+}
+
+.log-stage-strip > span {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 7px;
+  padding: 4px 8px;
+  border: 1px solid #34494a;
+  color: #aebcba;
+  font-size: 10px;
+}
+
+.log-stage-strip b { color: #d9a34d; font-weight: 500; }
+.log-stage-strip small { color: #6f8582; font: 10px 'Fira Code', monospace; }
+
+.log-mode {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: 8px;
+  padding: 3px 7px;
+  border: 1px solid #425456;
+  color: #8fa09e;
+  font: 9px 'Fira Code', monospace;
+  letter-spacing: .06em;
+}
+
+.log-mode::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #71817f;
+}
+
+.log-mode.live { color: #72d6a4; border-color: rgba(85,190,140,.4); }
+.log-mode.live::before { background: #55be8c; box-shadow: 0 0 8px #55be8c; }
+.log-mode.connecting::before { background: #ed9f34; animation: log-pulse 1s infinite alternate; }
+@keyframes log-pulse { to { opacity: .25; } }
+
+.console-line {
+  display: grid;
+  grid-template-columns: 74px 118px 1fr;
+  align-items: start;
+  gap: 10px;
+  min-height: 28px;
+  padding: 5px 20px;
+  border-left: 3px solid transparent;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.console-line time {
+  color: #607472;
+}
+
+.console-line > b {
+  color: #d9a34d;
+  font-weight: 500;
+}
+
+.console-line code {
+  color: #b5c2c0;
+  font: inherit;
+}
+
+.console-line.error {
+  background: rgba(201, 81, 66, .09);
+  border-left-color: #c95142;
+}
+
+.console-line.error code {
+  color: #f08a7e;
+}
+
+.console-line.command {
+  grid-template-columns: 74px 118px 42px 1fr;
+  margin: 5px 0;
+  padding-top: 9px;
+  padding-bottom: 9px;
+  background: rgba(237, 159, 52, .12);
+  border-top: 1px solid rgba(237, 159, 52, .24);
+  border-bottom: 1px solid rgba(237, 159, 52, .24);
+  border-left-color: #ed9f34;
+}
+
+.console-line.command code {
+  color: #ffd998;
+  font-weight: 500;
+}
+
+.command-mark {
+  display: inline-grid;
+  place-items: center;
+  min-height: 18px;
+  background: #ed9f34;
+  color: #17272a;
+  font-size: 9px;
+  letter-spacing: .08em;
+}

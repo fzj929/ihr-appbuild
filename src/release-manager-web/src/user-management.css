@@ -1,0 +1,22 @@
+.user-actions { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+.user-actions .btn { min-height: 34px; padding: 0 10px; font-size: 11px; }
+.user-notice { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 16px; padding: 12px 15px; border-left: 3px solid var(--green); background: #e8f4ed; color: #276b50; font-size: 12px; }
+.user-notice.error { border-left-color: var(--red); background: #fff2ef; color: #8b3328; }
+.user-notice button { border: 0; background: transparent; color: inherit; cursor: pointer; font-size: 18px; line-height: 1; }
+.password-modal { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 30px; background: rgba(10,20,22,.64); backdrop-filter: blur(4px); }
+.password-card { width: 440px; padding: 30px; border-top: 3px solid var(--amber); background: var(--paper); box-shadow: 0 30px 90px rgba(5,15,16,.32); }
+.password-card-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 25px; }
+.password-card-head > span { width: 42px; height: 42px; display: grid; place-items: center; background: var(--dark); color: var(--amber); }
+.password-card-head button { border: 0; background: transparent; color: #879390; cursor: pointer; }
+.password-card-head svg { width: 19px; }
+.password-card h2 { margin: 4px 0 8px; font-size: 23px; letter-spacing: -.025em; }
+.password-card > p { margin: 0 0 24px; color: var(--muted); font-size: 12px; line-height: 1.7; }
+.password-card label { display: grid; gap: 7px; margin-top: 15px; font-size: 12px; font-weight: 700; }
+.password-card input { height: 44px; }
+.password-card-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 25px; padding-top: 18px; border-top: 1px solid var(--line); }
+.account { grid-template-columns: 36px 1fr auto; }
+.account-tools { display: flex; align-items: center; }
+.account-tools .icon-btn { width: 28px; padding: 6px; color: #91a09f; }
+.account-tools .icon-btn:hover { color: var(--amber); }
+.password-error { margin: 15px 0 0; }
+.current-user-tag { display: inline-block; margin-left: 8px; padding: 2px 6px; background: #fff0cf; color: #8a5a16; font-size: 9px; font-weight: 700; }
