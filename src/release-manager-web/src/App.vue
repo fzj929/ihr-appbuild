@@ -32,7 +32,7 @@ async function changePassword() {
   <RouterView v-if="isLogin" />
   <div v-else class="shell">
     <aside class="rail">
-      <div class="brand"><span class="brand-mark"><Boxes :size="22"/></span><div><strong>铸版台</strong><small>RELEASE FOUNDRY</small></div></div>
+      <div class="brand"><span class="brand-mark"><Boxes :size="22"/></span><div><strong>铸剑台</strong><small>RELEASE FOUNDRY</small></div></div>
       <nav><RouterLink v-for="item in nav" :key="item.to" :to="item.to"><component :is="item.icon" :size="18"/><span>{{item.label}}</span></RouterLink></nav>
       <div class="account"><div class="avatar">{{session.user?.userName?.slice(0,1).toUpperCase()}}</div><div><strong>{{session.user?.userName}}</strong><small>{{session.user?.role}}</small></div><div class="account-tools"><button class="icon-btn" title="修改密码" @click="showPassword=true"><KeyRound :size="16"/></button><button class="icon-btn" title="退出" @click="logout"><LogOut :size="17"/></button></div></div>
     </aside>

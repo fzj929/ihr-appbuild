@@ -1,6 +1,6 @@
 # ihr-appbuild
 
-## 铸版台 · 软件发布管理平台
+## 铸剑台 · 软件发布管理平台
 
 基于 .NET 8 Web API、EF Core、SQLite 和 Vue 3 的软件发布管理平台，提供 SVN 获取、后台发布、双前端构建、配置版本、运行控制、回滚、发布包与审计功能。
 
@@ -48,6 +48,14 @@ powershell -ExecutionPolicy Bypass -File .\scripts\deploy-windows.ps1
 ```powershell
 .\scripts\deploy-windows.ps1 -InstallDirectory D:\ReleaseManager -Port 8080
 ```
+
+部署脚本会在启动前检查端口占用。若服务启动失败，会自动输出服务配置、最近的 Windows 服务事件，以及以下启动异常日志：
+
+```text
+C:\ProgramData\ReleaseManager\data\logs\service-startup.log
+```
+
+如果提示端口已被占用，请停止对应 PID，或通过 `-Port` 指定其他端口后重新部署。
 
 停止、启动和卸载：
 

@@ -9,9 +9,14 @@ using ReleaseManager.Api.Hubs;
 using ReleaseManager.Api.Infrastructure;
 using ReleaseManager.Api.Services;
 
+var startupLogPath = StartupDiagnostics.ResolveLogPath(args);
+try
+{
 var builder = WebApplication.CreateBuilder(args);
-builder.Host.UseWindowsService(o => o.ServiceName = "ReleaseManager");
+builder.Host.UseWindowsService(o => o.ServiceName = builder.Configuration["ServiceName"] ?? "ReleaseManager");
 builder.Host.UseSystemd();
+builder.Logging.ClearProviders();
+builder.Logging.AddSimpleConsole(o => { o.SingleLine = true; o.TimestampFormat = "yyyy-MM-dd HH:mm:ss.fff "; });
 builder.Services.Configure<PlatformOptions>(builder.Configuration.GetSection("Platform"));
 builder.Services.AddSingleton<DataPaths>();
 var bootstrapPaths = new DataPaths(builder.Configuration, builder.Environment); bootstrapPaths.EnsureCreated();
@@ -25,8 +30,12 @@ builder.Services.AddAuthorization(o =>
     o.AddPolicy(Roles.Admin, p => p.RequireRole(Roles.Admin));
     o.AddPolicy("CanOperate", p => p.RequireRole(Roles.Admin, Roles.Operator));
 });
-builder.Services.AddSignalR();
-builder.Services.ConfigureHttpJsonOptions(o => o.SerializerOptions.Converters.Add(new JsonStringEnumConverter()));
+builder.Services.AddSignalR().AddJsonProtocol(o => o.PayloadSerializerOptions.Converters.Add(new UtcDateTimeJsonConverter()));
+builder.Services.ConfigureHttpJsonOptions(o =>
+{
+    o.SerializerOptions.Converters.Add(new UtcDateTimeJsonConverter());
+    o.SerializerOptions.Converters.Add(new JsonStringEnumConverter());
+});
 builder.Services.AddScoped<ICommandRunner, CommandRunner>();
 builder.Services.AddScoped<ReleaseOrchestrator>();
 builder.Services.AddScoped<RuntimeService>();
@@ -50,5 +59,11 @@ app.MapPlatformApi();
 app.MapHub<ReleaseHub>("/hubs/releases");
 app.MapFallbackToFile("index.html");
 app.Run();
+}
+catch (Exception ex)
+{
+    StartupDiagnostics.Write(startupLogPath, ex);
+    throw;
+}
 
 public partial class Program;

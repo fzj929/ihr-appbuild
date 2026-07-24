@@ -3,7 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { HubConnectionBuilder, HubConnectionState, LogLevel } from '@microsoft/signalr'
 import { ArrowLeft, Rocket, Play, Square, RotateCw, Download, Undo2, Save, CheckCircle2, TerminalSquare, Pencil, LoaderCircle, Trash2 } from 'lucide-vue-next'
-import { api, post, statusText, when } from '../api'
+import { api, localizeRuntimeLog, post, statusText, timeOnly, when } from '../api'
 import { router, session } from '../main'
 import { PageHeader } from '../components/Common.vue'
 
@@ -110,7 +110,7 @@ async function load() {
     const taskId = String(route.query.task || tasks.value[0]?.id || '')
     if (taskId && taskId !== connectedTaskId) await selectTask(taskId)
     else if (taskId) selectedTask.value = await api(`/deployments/${taskId}`)
-    if (tab.value === 'runtime') runtimeLog.value = (await api<any>(`/projects/${id.value}/runtime/log`)).content
+    if (tab.value === 'runtime') runtimeLog.value = localizeRuntimeLog((await api<any>(`/projects/${id.value}/runtime/log`)).content)
   } catch (e:any) { error.value = e.message }
 }
 
@@ -126,7 +126,7 @@ async function refreshLiveState() {
       if (connected) logMode.value = 'live'
     } else if (tab.value === 'runtime') {
       runtime.value = await api(`/projects/${id.value}/runtime`)
-      runtimeLog.value = (await api<any>(`/projects/${id.value}/runtime/log`)).content
+      runtimeLog.value = localizeRuntimeLog((await api<any>(`/projects/${id.value}/runtime/log`)).content)
     } else if (tab.value === 'overview') {
       ;[tasks.value, releases.value, runtime.value] = await Promise.all([api<any>(`/projects/${id.value}/deployments`).then(x => x.items), api(`/projects/${id.value}/releases`), api(`/projects/${id.value}/runtime`)])
     }
@@ -212,7 +212,7 @@ onBeforeUnmount(() => { clearInterval(timer); stopLogStream() })
     </div>
     <div ref="logContainer" class="console release-log">
       <div v-for="l in logs" :key="l.id" :class="['console-line', l.level.toLowerCase()]">
-        <time>{{new Date(l.timestampUtc).toLocaleTimeString()}}</time>
+        <time>{{timeOnly(l.timestampUtc)}}</time>
         <b>{{l.stage}}</b>
         <strong v-if="l.level==='Command'" class="command-mark">CMD</strong>
         <code>{{l.message}}</code>
