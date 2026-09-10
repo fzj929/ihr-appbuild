@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.AspNetCore.Http.Features;
 using System.Text.Json.Serialization;
 using ReleaseManager.Api.Api;
 using ReleaseManager.Api.Data;
@@ -42,6 +43,7 @@ builder.Services.AddScoped<RuntimeService>();
 builder.Services.AddScoped<PackageService>();
 builder.Services.AddHostedService<ReleaseWorker>();
 builder.Services.AddCors(o => o.AddDefaultPolicy(p => p.WithOrigins("http://localhost:5173").AllowAnyHeader().AllowAnyMethod().AllowCredentials()));
+builder.Services.Configure<FormOptions>(o => o.MultipartBodyLengthLimit = 512L * 1024 * 1024);
 
 var app = builder.Build();
 await DatabaseInitializer.InitializeAsync(app.Services);

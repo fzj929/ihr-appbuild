@@ -1,4 +1,6 @@
 using System.Security.Claims;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.DataProtection;
@@ -43,6 +45,10 @@ public static class ApiEndpoints
         api.MapPost("/projects/{id:guid}/configurations/{configId:guid}/activate", ActivateConfiguration).RequireAuthorization(Roles.Admin);
         api.MapGet("/projects/{id:guid}/releases", Releases).RequireAuthorization();
         api.MapPost("/projects/{id:guid}/releases/{releaseId:guid}/rollback", Rollback).RequireAuthorization("CanOperate");
+        api.MapGet("/releases/{id:guid}/files", ReleaseFiles).RequireAuthorization();
+        api.MapGet("/releases/{id:guid}/files/download", DownloadReleaseFile).RequireAuthorization();
+        api.MapPost("/releases/{id:guid}/files", AddReleaseFile).RequireAuthorization("CanOperate");
+        api.MapPost("/releases/{id:guid}/files/replace", ReplaceReleaseFile).RequireAuthorization("CanOperate");
         api.MapPost("/releases/{id:guid}/package", CreatePackage).RequireAuthorization("CanOperate");
         api.MapGet("/packages/{id:guid}/download", DownloadPackage).RequireAuthorization("CanOperate");
 
@@ -85,9 +91,20 @@ public static class ApiEndpoints
         return Results.NoContent();
     }
 
-    private static async Task<IResult> Dashboard(AppDbContext db, RuntimeService runtime, CancellationToken ct) { var projects = await db.Projects.Where(x => !x.IsDeleted).OrderBy(x => x.Name).ToListAsync(ct); var rows = new List<object>(); foreach (var p in projects) { var release = p.CurrentReleaseId == null ? null : await db.Releases.FindAsync([p.CurrentReleaseId], ct); var last = await db.DeploymentTasks.Where(x => x.ProjectId == p.Id).OrderByDescending(x => x.CreatedAtUtc).FirstOrDefaultAsync(ct); rows.Add(new { p.Id, p.Slug, p.Name, p.Description, p.IsEnabled, currentVersion = release?.Version, svnRevision = release?.SvnRevision, lastDeployment = last == null ? null : new { last.Status, last.Progress, last.CreatedAtUtc, last.Error }, runtime = await runtime.StatusAsync(p.Id, ct) }); } return Results.Ok(rows); }
-    private static async Task<IResult> Projects(AppDbContext db, int page = 1, int pageSize = 50) { var q = db.Projects.Where(x => !x.IsDeleted).OrderBy(x => x.Name); var total = await q.CountAsync(); var rows = await q.Skip((page - 1) * pageSize).Take(Math.Min(pageSize, 100)).ToListAsync(); return Results.Ok(new { total, items = rows.Select(ProjectDto) }); }
-    private static async Task<IResult> ProjectDetail(Guid id, AppDbContext db) { var p = await db.Projects.SingleOrDefaultAsync(x => x.Id == id && !x.IsDeleted); return p == null ? Results.NotFound() : Results.Ok(ProjectDto(p)); }
+    private static async Task<IResult> Dashboard(AppDbContext db, RuntimeService runtime, CancellationToken ct) { var projects = await db.Projects.Where(x => !x.IsDeleted).OrderBy(x => x.Name).ToListAsync(ct); var rows = new List<object>(); foreach (var p in projects) { var release = p.CurrentReleaseId == null ? null : await db.Releases.FindAsync([p.CurrentReleaseId], ct); var releaseConfig = ReadReleaseConfiguration(release); var last = await db.DeploymentTasks.Where(x => x.ProjectId == p.Id).OrderByDescending(x => x.CreatedAtUtc).FirstOrDefaultAsync(ct); rows.Add(new { p.Id, p.Slug, p.Name, p.Description, p.IsEnabled, currentVersion = release?.Version, svnRevision = release?.SvnRevision, endpoints = releaseConfig.Endpoints, lastDeployment = last == null ? null : new { last.Status, last.Progress, last.CreatedAtUtc, last.Error }, runtime = await runtime.StatusAsync(p.Id, ct) }); } return Results.Ok(rows); }
+    private static async Task<IResult> Projects(AppDbContext db, int page = 1, int pageSize = 50) { var q = db.Projects.Where(x => !x.IsDeleted).OrderBy(x => x.Name); var total = await q.CountAsync(); var rows = await q.Skip((page - 1) * pageSize).Take(Math.Min(pageSize, 100)).ToListAsync(); return Results.Ok(new { total, items = rows.Select(x => ProjectDto(x)) }); }
+    private static async Task<IResult> ProjectDetail(Guid id, AppDbContext db, CancellationToken ct)
+    {
+        var p = await db.Projects.SingleOrDefaultAsync(x => x.Id == id && !x.IsDeleted, ct);
+        if (p == null) return Results.NotFound();
+        var release = p.CurrentReleaseId == null ? null : await db.Releases.FindAsync([p.CurrentReleaseId], ct);
+        var releaseConfig = ReadReleaseConfiguration(release);
+        var releaseIds = db.Releases.Where(x => x.ProjectId == id).Select(x => x.Id);
+        var lastPackageAtUtc = await db.Packages
+            .Where(x => releaseIds.Contains(x.ReleaseId) && x.GeneratedAtUtc != null)
+            .MaxAsync(x => (DateTime?)x.GeneratedAtUtc, ct);
+        return Results.Ok(ProjectDto(p, releaseConfig.Endpoints, releaseConfig.JsonContent, release?.Version, release?.BuiltAtUtc, lastPackageAtUtc));
+    }
     private static async Task<IResult> SaveProject(Guid? id, ProjectInput input, HttpContext http, ClaimsPrincipal user, AppDbContext db, IDataProtectionProvider protection) { try { Validation.ProjectInput(input); } catch (Exception e) { return Problem(e.Message, 400); } var p = id == null ? new Project() : await db.Projects.SingleOrDefaultAsync(x => x.Id == id) ?? new Project(); if (id != null && p.Id != id) return Results.NotFound(); Map(input, p); if (!string.IsNullOrEmpty(input.SvnPassword)) p.SvnPasswordProtected = protection.CreateProtector("ReleaseManager.SvnCredential.v1").Protect(input.SvnPassword); if (id == null) db.Projects.Add(p); Audit(db, http, user, id == null ? "Project.Create" : "Project.Update", p.Name, "Success"); await db.SaveChangesAsync(); return Results.Ok(ProjectDto(p)); }
     private static async Task<IResult> SoftDeleteProject(Guid id, HttpContext http, ClaimsPrincipal user, AppDbContext db) { var p = await db.Projects.FindAsync(id); if (p == null) return Results.NotFound(); p.IsDeleted = true; p.IsEnabled = false; Audit(db, http, user, "Project.Delete", p.Name, "Success"); await db.SaveChangesAsync(); return Results.NoContent(); }
     private static async Task<IResult> TestSvn(Guid id, AppDbContext db, IDataProtectionProvider protection, ICommandRunner runner, CancellationToken ct) { var p = await db.Projects.FindAsync(id); if (p == null) return Results.NotFound(); var password = p.SvnPasswordProtected == null ? null : protection.CreateProtector("ReleaseManager.SvnCredential.v1").Unprotect(p.SvnPasswordProtected); var args = new List<string> { "info", p.SvnUrl, "--non-interactive", "--no-auth-cache", "--username", p.SvnUserName }; if (password != null) args.Add("--password-from-stdin"); var r = await runner.RunAsync("svn", args, Environment.CurrentDirectory, null, TimeSpan.FromSeconds(30), null, ct, password); return r.ExitCode == 0 ? Results.Ok(new { success = true, message = "SVN 连接成功。" }) : Problem("SVN 连接或认证失败，请检查地址、凭据和证书设置。", 400); }
@@ -153,6 +170,80 @@ public static class ApiEndpoints
     private static async Task<IResult> SaveConfiguration(Guid id, ConfigRequest input, HttpContext http, ClaimsPrincipal user, AppDbContext db) { try { using var json = Validation.ParseAppSettings(input.JsonContent); } catch (JsonException e) { return Results.Json(new { code = "JSON_INVALID", message = $"appsettings.json 格式错误（第 {(e.LineNumber ?? 0) + 1} 行，第 {(e.BytePositionInLine ?? 0) + 1} 列），请检查缺少的逗号、引号或括号。" }, statusCode: 400); } var version = (await db.Configurations.Where(x => x.ProjectId == id).MaxAsync(x => (int?)x.Version) ?? 0) + 1; await db.Configurations.Where(x => x.ProjectId == id).ExecuteUpdateAsync(x => x.SetProperty(y => y.IsActive, false)); var c = new AppConfiguration { ProjectId = id, Version = version, JsonContent = input.JsonContent, Comment = input.Comment, CreatedByUserId = user.UserId(), IsActive = true }; db.Configurations.Add(c); Audit(db, http, user, "Configuration.Save", id.ToString(), "Success", $"v{version}: {input.Comment}"); await db.SaveChangesAsync(); return Results.Ok(c); }
     private static async Task<IResult> ActivateConfiguration(Guid id, Guid configId, HttpContext http, ClaimsPrincipal user, AppDbContext db) { var c = await db.Configurations.SingleOrDefaultAsync(x => x.Id == configId && x.ProjectId == id); if (c == null) return Results.NotFound(); await db.Configurations.Where(x => x.ProjectId == id).ExecuteUpdateAsync(x => x.SetProperty(y => y.IsActive, false)); c.IsActive = true; Audit(db, http, user, "Configuration.Activate", id.ToString(), "Success", $"v{c.Version}"); await db.SaveChangesAsync(); return Results.Ok(c); }
     private static async Task<IResult> Releases(Guid id, AppDbContext db) => Results.Ok(await db.Releases.Where(x => x.ProjectId == id).OrderByDescending(x => x.BuiltAtUtc).ToListAsync());
+    private static async Task<IResult> ReleaseFiles(Guid id, string? path, AppDbContext db, CancellationToken ct)
+    {
+        var release = await db.Releases.SingleOrDefaultAsync(x => x.Id == id && x.IsAvailable, ct);
+        if (release == null || !Directory.Exists(release.DirectoryPath)) return Results.NotFound();
+        string directory;
+        try { directory = ResolveReleasePath(release.DirectoryPath, path, requireExisting: true); }
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or FileNotFoundException or DirectoryNotFoundException) { return Problem(ex.Message, 400); }
+        if (!Directory.Exists(directory)) return Problem("指定路径不是目录。", 400);
+        var relativeDirectory = NormalizeRelativePath(Path.GetRelativePath(release.DirectoryPath, directory));
+        var entries = Directory.EnumerateFileSystemEntries(directory)
+            .Where(x => (File.GetAttributes(x) & FileAttributes.ReparsePoint) == 0)
+            .Select(x =>
+            {
+                var isDirectory = Directory.Exists(x);
+                var info = isDirectory ? (FileSystemInfo)new DirectoryInfo(x) : new FileInfo(x);
+                return new { name = info.Name, path = NormalizeRelativePath(Path.GetRelativePath(release.DirectoryPath, x)), isDirectory, size = isDirectory ? (long?)null : ((FileInfo)info).Length, lastModifiedUtc = info.LastWriteTimeUtc };
+            })
+            .OrderByDescending(x => x.isDirectory).ThenBy(x => x.name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        return Results.Ok(new { release = new { release.Id, release.ProjectId, release.Version, release.SvnRevision, release.BuiltAtUtc, release.ManifestSha256 }, path = relativeDirectory, entries });
+    }
+    private static async Task<IResult> DownloadReleaseFile(Guid id, string path, HttpContext http, ClaimsPrincipal user, AppDbContext db, CancellationToken ct)
+    {
+        var release = await db.Releases.SingleOrDefaultAsync(x => x.Id == id && x.IsAvailable, ct);
+        if (release == null) return Results.NotFound();
+        string file;
+        try { file = ResolveReleasePath(release.DirectoryPath, path, requireExisting: true); }
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or FileNotFoundException) { return Problem(ex.Message, 400); }
+        if (!File.Exists(file)) return Problem("指定路径不是文件。", 400);
+        Audit(db, http, user, "ReleaseFile.Download", $"{release.Version}/{NormalizeRelativePath(path)}", "Success");
+        await db.SaveChangesAsync(ct);
+        return Results.File(file, "application/octet-stream", Path.GetFileName(file), enableRangeProcessing: true);
+    }
+    private static Task<IResult> AddReleaseFile(Guid id, HttpRequest request, HttpContext http, ClaimsPrincipal user, AppDbContext db, CancellationToken ct) =>
+        SaveReleaseFile(id, request, http, user, db, replace: false, ct);
+    private static Task<IResult> ReplaceReleaseFile(Guid id, HttpRequest request, HttpContext http, ClaimsPrincipal user, AppDbContext db, CancellationToken ct) =>
+        SaveReleaseFile(id, request, http, user, db, replace: true, ct);
+    private static async Task<IResult> SaveReleaseFile(Guid id, HttpRequest request, HttpContext http, ClaimsPrincipal user, AppDbContext db, bool replace, CancellationToken ct)
+    {
+        if (!request.HasFormContentType) return Problem("请使用 multipart/form-data 上传文件。", 400);
+        var release = await db.Releases.SingleOrDefaultAsync(x => x.Id == id && x.IsAvailable, ct);
+        if (release == null || !Directory.Exists(release.DirectoryPath)) return Results.NotFound();
+        var form = await request.ReadFormAsync(ct);
+        var upload = form.Files.GetFile("file");
+        if (upload == null || upload.Length == 0) return Problem("请选择非空文件。", 400);
+        if (upload.FileName.Length > 255 || Path.GetFileName(upload.FileName) != upload.FileName) return Problem("文件名无效。", 400);
+        var requestedPath = replace ? form["path"].ToString() : Path.Combine(form["directory"].ToString(), upload.FileName);
+        string destination;
+        try { destination = ResolveReleasePath(release.DirectoryPath, requestedPath, requireExisting: replace); }
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or FileNotFoundException) { return Problem(ex.Message, 400); }
+        if (replace && !File.Exists(destination)) return Problem("要替换的文件不存在。", 404);
+        if (!replace && File.Exists(destination)) return Problem("当前目录已存在同名文件，请使用替换文件功能。", 409);
+        if (Directory.Exists(destination)) return Problem("目标路径是目录，不能写入文件。", 409);
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+            var temporary = destination + $".upload-{Guid.NewGuid():N}.tmp";
+            try
+            {
+                await using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None, 81920, FileOptions.Asynchronous))
+                    await upload.CopyToAsync(stream, ct);
+                File.Move(temporary, destination, replace);
+            }
+            finally { if (File.Exists(temporary)) File.Delete(temporary); }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return Problem($"文件写入失败：{ex.Message}", 409); }
+        release.ManifestSha256 = ComputeReleaseManifest(release.DirectoryPath);
+        await db.Packages.Where(x => x.ReleaseId == release.Id && x.State == PackageState.Ready)
+            .ExecuteUpdateAsync(x => x.SetProperty(y => y.State, PackageState.Failed).SetProperty(y => y.Error, "版本文件已修改，请重新生成发布包。"), ct);
+        var relative = NormalizeRelativePath(Path.GetRelativePath(release.DirectoryPath, destination));
+        Audit(db, http, user, replace ? "ReleaseFile.Replace" : "ReleaseFile.Add", $"{release.Version}/{relative}", "Success", $"{upload.Length} 字节");
+        await db.SaveChangesAsync(ct);
+        return Results.Ok(new { path = relative, size = upload.Length, release.ManifestSha256 });
+    }
     private static async Task<IResult> Rollback(Guid id, Guid releaseId, HttpContext http, ClaimsPrincipal user, AppDbContext db, RuntimeService runtime, CancellationToken ct) { var p = await db.Projects.FindAsync([id], ct); var r = await db.Releases.SingleOrDefaultAsync(x => x.Id == releaseId && x.ProjectId == id && x.IsAvailable, ct); if (p == null || r == null) return Results.NotFound(); try { await runtime.StopAsync(id, false, ct); } catch { } p.CurrentReleaseId = r.Id; db.DeploymentTasks.Add(new DeploymentTask { ProjectId = id, Status = DeploymentStatus.RolledBack, Progress = 100, TriggeredByUserId = user.UserId(), TriggeredByName = user.UserName(), ResolvedRevision = r.SvnRevision, ReleaseVersion = r.Version, StartedAtUtc = DateTime.UtcNow, FinishedAtUtc = DateTime.UtcNow }); await db.SaveChangesAsync(ct); await runtime.StartAsync(id, ct); Audit(db, http, user, "Release.Rollback", r.Version, "Success"); await db.SaveChangesAsync(ct); return Results.Ok(r); }
     private static async Task<IResult> CreatePackage(Guid id, HttpContext http, ClaimsPrincipal user, PackageService service, AppDbContext db, CancellationToken ct) { var p = await service.CreateAsync(id, ct); Audit(db, http, user, "Package.Create", id.ToString(), p.State.ToString()); await db.SaveChangesAsync(ct); return Results.Ok(p); }
     private static async Task<IResult> DownloadPackage(Guid id, HttpContext http, ClaimsPrincipal user, AppDbContext db, CancellationToken ct) { var p = await db.Packages.FindAsync([id], ct); if (p == null || p.State != PackageState.Ready || !File.Exists(p.Path)) return Results.NotFound(); Audit(db, http, user, "Package.Download", id.ToString(), "Success", "下载包可能包含敏感配置"); await db.SaveChangesAsync(ct); return Results.File(p.Path, "application/zip", Path.GetFileName(p.Path), enableRangeProcessing: true); }
@@ -193,7 +284,7 @@ public static class ApiEndpoints
     private static async Task<IResult> GetAudit(AppDbContext db, int page = 1, int pageSize = 50, string? action = null) { var q = db.AuditLogs.Where(x => action == null || x.Action.Contains(action)).OrderByDescending(x => x.TimestampUtc); return Results.Ok(new { total = await q.CountAsync(), items = await q.Skip((page - 1) * pageSize).Take(Math.Min(pageSize, 100)).ToListAsync() }); }
     private static IResult Settings(IConfiguration c, DataPaths paths, IOptions<PlatformOptions> o) => Results.Ok(new { dataRoot = paths.Root, o.Value.MaxConcurrentDeployments, o.Value.SessionHours, platform = Environment.OSVersion.ToString(), framework = Environment.Version.ToString() });
 
-    private static object ProjectDto(Project p) => new { p.Id, p.Slug, p.Name, p.Description, p.IsEnabled, p.SvnUrl, p.SvnUserName, hasSvnPassword = p.SvnPasswordProtected != null, p.TrustServerCertificate, p.TrunkPath, p.BackendDirectory, p.BackendProjectFile, p.EntryAssembly, p.AdminDirectory, p.TerminalDirectory, p.AdminBuildCommand, p.TerminalBuildCommand, p.AdminOutputDirectory, p.TerminalOutputDirectory, p.BuildConfiguration, p.TargetFramework, p.EnvironmentVariablesJson, p.StartArgumentsJson, p.HealthCheckUrl, p.HealthExpectedStatus, p.HealthTimeoutSeconds, p.StopTimeoutSeconds, p.BuildTimeoutMinutes, p.RetainReleaseCount, p.RetainPackageDays, p.CurrentReleaseId, p.CreatedAtUtc, p.UpdatedAtUtc };
+    private static object ProjectDto(Project p, IReadOnlyList<string>? endpoints = null, string? appSettingsJson = null, string? currentVersion = null, DateTime? lastBuiltAtUtc = null, DateTime? lastPackageAtUtc = null) => new { p.Id, p.Slug, p.Name, p.Description, p.IsEnabled, p.SvnUrl, p.SvnUserName, hasSvnPassword = p.SvnPasswordProtected != null, p.TrustServerCertificate, p.TrunkPath, p.BackendDirectory, p.BackendProjectFile, p.EntryAssembly, p.AdminDirectory, p.TerminalDirectory, p.AdminBuildCommand, p.TerminalBuildCommand, p.AdminOutputDirectory, p.TerminalOutputDirectory, p.BuildConfiguration, p.TargetFramework, p.EnvironmentVariablesJson, p.StartArgumentsJson, p.HealthCheckUrl, p.HealthExpectedStatus, p.HealthTimeoutSeconds, p.StopTimeoutSeconds, p.BuildTimeoutMinutes, p.RetainReleaseCount, p.RetainPackageDays, p.CurrentReleaseId, p.CreatedAtUtc, p.UpdatedAtUtc, endpoints = endpoints ?? [], appSettingsJson, currentVersion, lastBuiltAtUtc, lastPackageAtUtc };
     private static void Map(ProjectInput i, Project p) { p.Slug = i.Slug; p.Name = i.Name; p.Description = i.Description; p.IsEnabled = i.IsEnabled; p.SvnUrl = i.SvnUrl; p.SvnUserName = i.SvnUserName; p.TrustServerCertificate = i.TrustServerCertificate; p.TrunkPath = i.TrunkPath; p.BackendDirectory = i.BackendDirectory; p.BackendProjectFile = i.BackendProjectFile; p.EntryAssembly = i.EntryAssembly; p.AdminDirectory = i.AdminDirectory; p.TerminalDirectory = i.TerminalDirectory; p.AdminBuildCommand = i.AdminBuildCommand; p.TerminalBuildCommand = i.TerminalBuildCommand; p.AdminOutputDirectory = i.AdminOutputDirectory; p.TerminalOutputDirectory = i.TerminalOutputDirectory; p.BuildConfiguration = i.BuildConfiguration; p.TargetFramework = i.TargetFramework; p.EnvironmentVariablesJson = i.EnvironmentVariablesJson; p.StartArgumentsJson = i.StartArgumentsJson; p.HealthCheckUrl = i.HealthCheckUrl; p.HealthExpectedStatus = i.HealthExpectedStatus; p.HealthTimeoutSeconds = i.HealthTimeoutSeconds; p.StopTimeoutSeconds = i.StopTimeoutSeconds; p.BuildTimeoutMinutes = i.BuildTimeoutMinutes; p.RetainReleaseCount = i.RetainReleaseCount; p.RetainPackageDays = i.RetainPackageDays; p.UpdatedAtUtc = DateTime.UtcNow; }
     private static void Audit(AppDbContext db, HttpContext http, ClaimsPrincipal user, string action, string target, string result, string details = "") => db.AuditLogs.Add(new AuditLog { UserId = user.Identity?.IsAuthenticated == true ? user.UserId() : null, UserName = user.Identity?.Name ?? "anonymous", Action = action, Target = target, Result = result, Details = details, IpAddress = http.Connection.RemoteIpAddress?.ToString() ?? "" });
     private static void Audit(AppDbContext db, HttpContext http, User user, string action, string target, string result, string details = "") => db.AuditLogs.Add(new AuditLog { UserId = user.Id, UserName = user.UserName, Action = action, Target = target, Result = result, Details = details, IpAddress = http.Connection.RemoteIpAddress?.ToString() ?? "" });
@@ -213,6 +304,68 @@ public static class ApiEndpoints
         if (!OperatingSystem.IsWindows()) return;
         var options = new EnumerationOptions { RecurseSubdirectories = true, AttributesToSkip = FileAttributes.ReparsePoint };
         foreach (var file in Directory.EnumerateFiles(path, "*", options)) File.SetAttributes(file, FileAttributes.Normal);
+    }
+    private static (string? JsonContent, IReadOnlyList<string> Endpoints) ReadReleaseConfiguration(Release? release)
+    {
+        if (release == null) return (null, []);
+        var path = Path.Combine(release.DirectoryPath, "appsettings.json");
+        if (!File.Exists(path)) return (null, []);
+        try
+        {
+            var content = File.ReadAllText(path);
+            using var document = Validation.ParseAppSettings(content);
+            var endpoints = new List<string>();
+            if (TryGetProperty(document.RootElement, "Kestrel", out var kestrel)
+                && TryGetProperty(kestrel, "Endpoints", out var endpointObject)
+                && endpointObject.ValueKind == JsonValueKind.Object)
+            {
+                foreach (var endpoint in endpointObject.EnumerateObject())
+                    if (endpoint.Value.ValueKind == JsonValueKind.Object
+                        && TryGetProperty(endpoint.Value, "Url", out var url)
+                        && url.ValueKind == JsonValueKind.String
+                        && !string.IsNullOrWhiteSpace(url.GetString())) endpoints.Add(url.GetString()!);
+            }
+            return (content, endpoints);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException) { return (null, []); }
+    }
+    private static bool TryGetProperty(JsonElement element, string name, out JsonElement value)
+    {
+        if (element.ValueKind == JsonValueKind.Object)
+            foreach (var property in element.EnumerateObject())
+                if (string.Equals(property.Name, name, StringComparison.OrdinalIgnoreCase)) { value = property.Value; return true; }
+        value = default;
+        return false;
+    }
+    private static string ResolveReleasePath(string root, string? relativePath, bool requireExisting)
+    {
+        var fullRoot = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var relative = string.IsNullOrWhiteSpace(relativePath) || relativePath == "." ? "" : relativePath.Replace('/', Path.DirectorySeparatorChar);
+        if (Path.IsPathRooted(relative) || relative.IndexOf('\0') >= 0 || relative.Split(Path.DirectorySeparatorChar).Any(x => x == "..")) throw new ArgumentException("文件路径无效。");
+        var fullPath = Path.GetFullPath(Path.Combine(fullRoot, relative));
+        var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        if (fullPath != fullRoot && !fullPath.StartsWith(fullRoot + Path.DirectorySeparatorChar, comparison)) throw new InvalidOperationException("文件路径超出版本目录。");
+        var existing = fullRoot;
+        foreach (var segment in Path.GetRelativePath(fullRoot, fullPath).Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries))
+        {
+            existing = Path.Combine(existing, segment);
+            if ((File.Exists(existing) || Directory.Exists(existing)) && (File.GetAttributes(existing) & FileAttributes.ReparsePoint) != 0) throw new InvalidOperationException("不允许访问版本目录中的链接路径。");
+        }
+        if (requireExisting && !File.Exists(fullPath) && !Directory.Exists(fullPath)) throw new FileNotFoundException("指定的文件或目录不存在。");
+        return fullPath;
+    }
+    private static string NormalizeRelativePath(string path) => path == "." ? "" : path.Replace('\\', '/');
+    private static string ComputeReleaseManifest(string root)
+    {
+        using var sha = SHA256.Create();
+        foreach (var file in Directory.GetFiles(root, "*", SearchOption.AllDirectories).OrderBy(x => x, StringComparer.Ordinal))
+        {
+            if ((File.GetAttributes(file) & FileAttributes.ReparsePoint) != 0) continue;
+            var bytes = Encoding.UTF8.GetBytes(Path.GetRelativePath(root, file) + ":" + Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(file))));
+            sha.TransformBlock(bytes, 0, bytes.Length, null, 0);
+        }
+        sha.TransformFinalBlock([], 0, 0);
+        return Convert.ToHexString(sha.Hash!);
     }
     private static IResult Problem(string message, int status) => Results.Json(new { code = "REQUEST_FAILED", message }, statusCode: status);
 }

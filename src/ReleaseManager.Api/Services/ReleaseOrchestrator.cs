@@ -88,16 +88,23 @@ public sealed class ReleaseOrchestrator(AppDbContext db, DataPaths paths, IComma
                 workspace, project.AdminDirectory, project.AdminOutputDirectory, project, ct,
                 (line, error) => Log(error ? "Error" : "Info", "构建管理员前端", line),
                 command => Log("Command", "构建管理员前端", command)));
-            await Stage(DeploymentStatus.BuildingTerminal, 58, "构建终端前端", () => BuildFrontend(
-                workspace, project.TerminalDirectory, project.TerminalOutputDirectory, project, ct,
-                (line, error) => Log(error ? "Error" : "Info", "构建终端前端", line),
-                command => Log("Command", "构建终端前端", command)));
+            string? terminalSource = null;
+            await Stage(DeploymentStatus.BuildingTerminal, 58, "构建终端前端", async () =>
+            {
+                await BuildFrontend(
+                    workspace, project.TerminalDirectory, project.TerminalOutputDirectory, project, ct,
+                    (line, error) => Log(error ? "Error" : "Info", "构建终端前端", line),
+                    command => Log("Command", "构建终端前端", command),
+                    validateConfiguredOutput: false);
+                terminalSource = await NormalizeTerminalOutput(
+                    workspace, project, message => Log("Info", "构建终端前端", message));
+            });
             await Stage(DeploymentStatus.Assembling, 68, "组装产物", async () =>
             {
                 var adminSource = Path.Combine(workspace, project.AdminDirectory, project.AdminOutputDirectory); var adminTarget = Path.Combine(staging, "wwwroot", "admin");
-                var terminalSource = Path.Combine(workspace, project.TerminalDirectory, project.TerminalOutputDirectory); var terminalTarget = Path.Combine(staging, "wwwroot", "terminal");
+                var normalizedTerminalSource = terminalSource ?? throw new InvalidOperationException("终端前端构建产物尚未完成归一化。"); var terminalTarget = Path.Combine(staging, "wwwroot", "terminal");
                 await Log("Info", "组装产物", $"复制 admin 产物：{adminSource} -> {adminTarget}（{CountFiles(adminSource)} 个文件）"); CopyDirectory(adminSource, adminTarget);
-                await Log("Info", "组装产物", $"复制 terminal 产物：{terminalSource} -> {terminalTarget}（{CountFiles(terminalSource)} 个文件）"); CopyDirectory(terminalSource, terminalTarget);
+                await Log("Info", "组装产物", $"复制 terminal 产物：{normalizedTerminalSource} -> {terminalTarget}（{CountFiles(normalizedTerminalSource)} 个文件）"); CopyDirectory(normalizedTerminalSource, terminalTarget);
             });
             var config = await db.Configurations.Where(x => x.ProjectId == project.Id && x.IsActive).OrderByDescending(x => x.Version).FirstOrDefaultAsync(ct);
             await Stage(DeploymentStatus.ApplyingConfiguration, 76, "应用配置", async () =>
@@ -192,7 +199,7 @@ public sealed class ReleaseOrchestrator(AppDbContext db, DataPaths paths, IComma
         if (info.ExitCode != 0 || !long.TryParse(info.Output.Trim(), out var resolved)) throw new InvalidOperationException("无法解析 SVN Revision。"); task.ResolvedRevision = resolved; await db.SaveChangesAsync(ct);
     }
 
-    private async Task BuildFrontend(string workspace, string relative, string output, Project p, CancellationToken ct, Func<string, bool, Task> onLine, Func<string, Task> onCommand)
+    private async Task BuildFrontend(string workspace, string relative, string output, Project p, CancellationToken ct, Func<string, bool, Task> onLine, Func<string, Task> onCommand, bool validateConfiguredOutput = true)
     {
         var dir = Path.Combine(workspace, relative); RequiredFile(Path.Combine(dir, "package.json"));
         var install = File.Exists(Path.Combine(dir, "package-lock.json")) ? new[] { "ci" } : new[] { "install" };
@@ -200,7 +207,59 @@ public sealed class ReleaseOrchestrator(AppDbContext db, DataPaths paths, IComma
         string[] installArgs = [.. npm.PrefixArguments, .. install]; await onCommand(FormatCommand("npm", install));
         var r1 = await commands.RunAsync(npm.FileName, installArgs, dir, ParseEnvironment(p.EnvironmentVariablesJson), TimeSpan.FromMinutes(p.BuildTimeoutMinutes), onLine, ct); if (r1.ExitCode != 0) throw new InvalidOperationException($"{relative} 依赖安装失败。");
         string[] buildArgs = [.. npm.PrefixArguments, "run", "build"]; await onCommand(FormatCommand("npm", ["run", "build"]));
-        var r2 = await commands.RunAsync(npm.FileName, buildArgs, dir, ParseEnvironment(p.EnvironmentVariablesJson), TimeSpan.FromMinutes(p.BuildTimeoutMinutes), onLine, ct); if (r2.ExitCode != 0) throw new InvalidOperationException($"{relative} 构建失败。"); RequiredNonEmptyDirectory(Path.Combine(dir, output));
+        var r2 = await commands.RunAsync(npm.FileName, buildArgs, dir, ParseEnvironment(p.EnvironmentVariablesJson), TimeSpan.FromMinutes(p.BuildTimeoutMinutes), onLine, ct); if (r2.ExitCode != 0) throw new InvalidOperationException($"{relative} 构建失败。");
+        if (validateConfiguredOutput) RequiredNonEmptyDirectory(Path.Combine(dir, output));
+    }
+
+    private static async Task<string> NormalizeTerminalOutput(string workspace, Project project, Func<string, Task> log)
+    {
+        var frontendDirectory = Path.Combine(workspace, project.TerminalDirectory);
+        var configuredOutput = Path.GetFullPath(Path.Combine(frontendDirectory, project.TerminalOutputDirectory));
+        var configuredName = Path.GetFileName(Path.TrimEndingDirectorySeparator(configuredOutput));
+        var distDirectory = string.Equals(configuredName, "terminal", StringComparison.OrdinalIgnoreCase)
+            ? Path.GetDirectoryName(configuredOutput)!
+            : configuredOutput;
+        var canonicalDirectory = Path.Combine(distDirectory, "terminal");
+
+        if (!Directory.Exists(distDirectory))
+            throw new DirectoryNotFoundException($"终端前端构建输出目录不存在：{distDirectory}");
+
+        var aliases = Directory.GetDirectories(distDirectory, "*", SearchOption.TopDirectoryOnly)
+            .Where(path =>
+            {
+                var name = Path.GetFileName(path);
+                return !string.Equals(name, "terminal", StringComparison.OrdinalIgnoreCase)
+                    && name.EndsWith("_terminal", StringComparison.OrdinalIgnoreCase);
+            })
+            .ToArray();
+
+        if (aliases.Length > 0)
+        {
+            var expectedAlias = $"{project.Name}_terminal";
+            var exactMatches = aliases
+                .Where(path => string.Equals(Path.GetFileName(path), expectedAlias, StringComparison.OrdinalIgnoreCase))
+                .ToArray();
+            var source = exactMatches.Length == 1
+                ? exactMatches[0]
+                : aliases.Length == 1
+                    ? aliases[0]
+                    : throw new InvalidOperationException(
+                        $"在 {distDirectory} 中发现多个 *_terminal 构建目录，无法确定应使用哪一个：{string.Join("、", aliases.Select(Path.GetFileName))}");
+
+            RequiredNonEmptyDirectory(source);
+            if (Directory.Exists(canonicalDirectory))
+            {
+                await log($"发现别名构建目录 {Path.GetFileName(source)}，删除已有的 terminal 目录后进行归一化。");
+                Directory.Delete(canonicalDirectory, true);
+            }
+
+            Directory.Move(source, canonicalDirectory);
+            await log($"已将终端构建目录重命名：{source} -> {canonicalDirectory}");
+        }
+
+        RequiredNonEmptyDirectory(canonicalDirectory);
+        await log($"终端前端构建产物目录：{canonicalDirectory}（{CountFiles(canonicalDirectory)} 个文件）");
+        return canonicalDirectory;
     }
 
     private static Dictionary<string, string> ParseEnvironment(string json) => JsonSerializer.Deserialize<Dictionary<string, string>>(json) ?? [];

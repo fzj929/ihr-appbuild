@@ -5,6 +5,7 @@ import Login from './views/Login.vue'
 import Dashboard from './views/Dashboard.vue'
 import ProjectEditor from './views/ProjectEditor.vue'
 import ProjectWorkspace from './views/ProjectWorkspace.vue'
+import ReleaseFiles from './views/ReleaseFiles.vue'
 import Users from './views/Users.vue'
 import Audit from './views/Audit.vue'
 import Settings from './views/Settings.vue'
@@ -13,6 +14,7 @@ import './log-console.css'
 import './download-feedback.css'
 import './workspace-cleanup.css'
 import './user-management.css'
+import './release-files.css'
 
 export const session = reactive<{token:string; user:any}>({ token: localStorage.getItem('token') || '', user: JSON.parse(localStorage.getItem('user') || 'null') })
 export const router = createRouter({ history: createWebHistory(), routes: [
@@ -20,6 +22,7 @@ export const router = createRouter({ history: createWebHistory(), routes: [
   { path: '/', component: Dashboard },
   { path: '/projects/new', component: ProjectEditor },
   { path: '/projects/:id/edit', component: ProjectEditor },
+  { path: '/projects/:projectId/releases/:releaseId/files', component: ReleaseFiles },
   { path: '/projects/:id/:tab?', component: ProjectWorkspace },
   { path: '/users', component: Users, meta: { admin: true } },
   { path: '/audit', component: Audit, meta: { admin: true } },
